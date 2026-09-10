@@ -19,6 +19,15 @@ extension type _SpeechRecognition._(web.SpeechRecognition _)
   external factory _SpeechRecognition();
 }
 
+@JS('SpeechRecognitionPhrase')
+extension type _SpeechRecognitionPhrase._(JSObject _)
+    implements JSObject {
+  external factory _SpeechRecognitionPhrase(
+    String phrase,
+    double boost,
+  );
+}
+
 /// Web implementation of the SpeechToText platform interface. This supports
 /// the speech to text functionality running in web browsers that have
 /// SpeechRecognition support.
@@ -171,6 +180,11 @@ class SpeechToTextPlugin extends SpeechToTextPlatform {
     _webSpeech!.onresult = _onResult.toJS;
     _webSpeech!.interimResults = options?.partialResults ?? partialResults;
     _webSpeech!.continuous = options?.partialResults ?? partialResults;
+// Request several possible transcriptions instead of only the top result.
+
+    _webSpeech!.maxAlternatives = 5;
+
+    
     if (null != localeId) {
       _webSpeech!.lang = localeId;
     }

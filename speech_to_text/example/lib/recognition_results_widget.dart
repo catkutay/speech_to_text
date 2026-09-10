@@ -46,7 +46,7 @@ class RecognitionResultsWidget extends StatelessWidget {
                         BoxShadow(
                             blurRadius: .26,
                             spreadRadius: speechProvider.lastLevel * 1.5,
-                            color: Colors.black.withOpacity(.05))
+                            color: Colors.black.withValues(alpha: .05))
                       ],
                       color: Colors.white,
                       borderRadius: const BorderRadius.all(Radius.circular(50)),

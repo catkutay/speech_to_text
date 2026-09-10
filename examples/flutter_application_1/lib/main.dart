@@ -3,6 +3,11 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+
+import 'package:record/record.dart';
+
 //Speech Recognition packages
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
@@ -18,7 +23,7 @@ import 'package:device_apps/device_apps.dart'; //App checking
 void main() => runApp(const SpeechSampleApp());
 
 class SpeechSampleApp extends StatefulWidget {
-  const SpeechSampleApp({Key? key}) : super(key: key);
+  const SpeechSampleApp({super.key});
 
   @override
   State<SpeechSampleApp> createState() => _SpeechSampleAppState();
@@ -35,6 +40,37 @@ class _SpeechSampleAppState extends State<SpeechSampleApp> {
   String lastWords = '';
   String lastError = '';
   String lastStatus = '';
+
+String targetWord = 'ngiyala';
+
+List<String> targetSegments = [
+  'ngi',
+  'ya',
+  'la',
+];
+
+String recognizedText = '';
+String rawSttResult = '';
+String closestSttCandidate = '';
+
+String acousticStatus = '';
+double? acousticSimilarity;
+double? acousticNormalizedDistance;
+double? acousticDtwDistance;
+
+final AudioRecorder learnerRecorder = AudioRecorder();
+
+bool isLearnerRecording = false;
+String? learnerRecordingPath;
+
+List<double> segmentScores = [
+  0.0,
+  0.0,
+  0.0,
+];
+
+String overallResult = '';
+
   List<LocaleName> _localeNames = [];
   final SpeechToText speech = SpeechToText();
 
@@ -105,7 +141,9 @@ class _SpeechSampleAppState extends State<SpeechSampleApp> {
   Widget build(BuildContext context) {
     return MaterialApp(
       home: Scaffold(
-        appBar: AppBar(title: const Text('Speech to Text Example')),
+        appBar: AppBar(
+          title: const Text('Pronunciation Analysis Prototype'),
+      ),
         body: Builder(
           builder: (ctx) => SingleChildScrollView(
             child: Column(
@@ -129,16 +167,96 @@ class _SpeechSampleAppState extends State<SpeechSampleApp> {
                     ),
                   ],
                 ),
-                SpeechControlWidget(
-                  _hasSpeech,
-                  speech.isListening,
-                  startListening,
-                  stopListening,
-                  cancelListening,
-                ),
-                RecognitionResultsWidget(lastWords: lastWords, level: level),
-                SpeechStatusWidget(lastStatus: lastStatus),
-                ErrorWidget(lastError: lastError),
+                
+                RecognitionResultsWidget(
+  lastWords: lastWords,
+  level: level,
+  targetWord: targetWord,
+  targetSegments: targetSegments,
+  segmentScores: segmentScores,
+  overallResult: overallResult,
+  rawSttResult: rawSttResult,
+  closestSttCandidate: closestSttCandidate,
+),
+const SizedBox(height: 16),
+
+const Text(
+  'LEARNER PRONUNCIATION ATTEMPT',
+  style: TextStyle(
+    fontSize: 16,
+    fontWeight: FontWeight.bold,
+  ),
+),
+
+const SizedBox(height: 10),
+
+Row(
+  mainAxisAlignment: MainAxisAlignment.center,
+  children: [
+    ElevatedButton.icon(
+      onPressed:
+          isLearnerRecording ? null : startLearnerAttempt,
+      icon: const Icon(Icons.mic),
+      label: const Text('Start Learner Attempt'),
+    ),
+
+    const SizedBox(width: 12),
+
+    ElevatedButton.icon(
+      onPressed:
+          isLearnerRecording ? stopLearnerAttempt : null,
+      icon: const Icon(Icons.stop),
+      label: const Text('Stop Attempt'),
+    ),
+  ],
+),
+
+const SizedBox(height: 8),
+
+if (isLearnerRecording)
+  const Text(
+    'Recording...',
+    style: TextStyle(fontWeight: FontWeight.bold),
+  ),
+
+if (!isLearnerRecording && learnerRecordingPath != null)
+  const Text(
+    'Learner recording ready ✓',
+    style: TextStyle(fontWeight: FontWeight.bold),
+  ),
+
+ElevatedButton.icon(
+  onPressed: runAcousticCheck,
+  icon: const Icon(Icons.graphic_eq),
+  label: const Text('Analyse Pronunciation'),
+),
+
+const SizedBox(height: 10),
+
+if (acousticStatus.isNotEmpty)
+  Text(
+    acousticStatus,
+    textAlign: TextAlign.center,
+  ),
+
+if (acousticSimilarity != null)
+  Text(
+    'Acoustic similarity: '
+    '${(acousticSimilarity! * 100).toStringAsFixed(1)}%',
+    style: const TextStyle(
+      fontSize: 18,
+      fontWeight: FontWeight.bold,
+    ),
+  ),
+
+if (acousticNormalizedDistance != null)
+  Text(
+    'Normalized DTW distance: '
+    '${acousticNormalizedDistance!.toStringAsFixed(3)}',
+  ),
+
+              SpeechStatusWidget(lastStatus: lastStatus),
+              ErrorWidget(lastError: lastError),
               ],
             ),
           ),
@@ -183,44 +301,466 @@ class _SpeechSampleAppState extends State<SpeechSampleApp> {
       level = 0.0;
     });
   }
+Future<void> startLearnerAttempt() async {
+  await startLearnerRecording();
 
+  if (!isLearnerRecording) {
+    return;
+  }
+
+  setState(() {
+    acousticStatus = 'Recording learner pronunciation...';
+  });
+}
+  Future<void> startLearnerRecording() async {
+  try {
+    final hasPermission = await learnerRecorder.hasPermission();
+
+    if (!hasPermission) {
+      setState(() {
+        acousticStatus = 'Microphone permission was not granted.';
+      });
+      return;
+    }
+
+    await learnerRecorder.start(
+      const RecordConfig(
+        encoder: AudioEncoder.wav,
+        sampleRate: 16000,
+        numChannels: 1,
+      ),
+      path: '',
+    );
+
+    setState(() {
+      isLearnerRecording = true;
+      learnerRecordingPath = null;
+      acousticStatus = 'Recording learner attempt...';
+    });
+  } catch (e) {
+    setState(() {
+      acousticStatus = 'Could not start learner recording: $e';
+    });
+  }
+}
+
+Future<void> stopLearnerRecording() async {
+  try {
+    final path = await learnerRecorder.stop();
+
+    setState(() {
+      isLearnerRecording = false;
+      learnerRecordingPath = path;
+
+      if (path == null) {
+        acousticStatus = 'No learner recording was captured.';
+      } else {
+        acousticStatus = 'Learner recording captured.';
+      }
+    });
+
+    debugPrint('LEARNER RECORDING PATH: $path');
+  } catch (e) {
+    setState(() {
+      isLearnerRecording = false;
+      acousticStatus = 'Could not stop learner recording: $e';
+    });
+  }
+}
+Future<void> stopLearnerAttempt() async {
+  if (speech.isListening) {
+    await speech.stop();
+  }
+
+  if (isLearnerRecording) {
+    await stopLearnerRecording();
+  }
+
+  setState(() {
+    level = 0.0;
+  });
+}
+  Future<void> runAcousticCheck() async {
+  const teacherUrl =
+      'https://prt820-language-app1.s3.ap-southeast-2.amazonaws.com/words/Common/ngiyala.wav';
+
+  if (learnerRecordingPath == null) {
+    setState(() {
+      acousticStatus = 'Please record a learner attempt first.';
+    });
+    return;
+  }
+
+  setState(() {
+    acousticStatus = 'Uploading and analysing learner recording...';
+    acousticSimilarity = null;
+    acousticNormalizedDistance = null;
+    acousticDtwDistance = null;
+  });
+
+  try {
+    // Get the WAV bytes from the browser recording
+    final recordedAudioResponse =
+        await http.get(Uri.parse(learnerRecordingPath!));
+
+    if (recordedAudioResponse.statusCode != 200) {
+      setState(() {
+        acousticStatus = 'Could not read learner recording.';
+      });
+      return;
+    }
+
+    // Send teacher URL + actual learner WAV to Flask
+    final request = http.MultipartRequest(
+      'POST',
+      Uri.parse('http://localhost:8081/compare-upload'),
+    );
+
+    request.fields['teacher_url'] = teacherUrl;
+
+    request.files.add(
+      http.MultipartFile.fromBytes(
+        'learner_audio',
+        recordedAudioResponse.bodyBytes,
+        filename: 'learner_attempt.wav',
+      ),
+    );
+
+    final streamedResponse = await request.send();
+    final response = await http.Response.fromStream(streamedResponse);
+
+    if (response.statusCode == 200) {
+  final data = jsonDecode(response.body);
+
+  final backendStt =
+      (data['stt_text'] ?? '').toString().trim().toLowerCase();
+
+final acousticSegmentsRaw =
+    (data['acoustic_segments'] as List<dynamic>?) ?? [];
+
+final acousticByLabel = <String, double>{};
+
+for (final item in acousticSegmentsRaw) {
+  final segment =
+      Map<String, dynamic>.from(item as Map);
+
+  final label =
+      (segment['label'] ?? '')
+          .toString()
+          .toLowerCase();
+
+  final similarity =
+      (segment['similarity'] as num?)
+              ?.toDouble() ??
+          0.0;
+
+  acousticByLabel[label] =
+      similarity.clamp(0.0, 1.0).toDouble();
+}
+
+final acousticSegmentScores = targetSegments
+    .map(
+      (segment) =>
+          acousticByLabel[
+              segment.toLowerCase()] ??
+          0.0,
+    )
+    .toList();
+
+String backendResultMessage = '';
+
+if (acousticSegmentScores.isNotEmpty) {
+  int weakestIndex = 0;
+
+  for (int i = 1; i < acousticSegmentScores.length; i++) {
+    if (acousticSegmentScores[i] <
+        acousticSegmentScores[weakestIndex]) {
+      weakestIndex = i;
+    }
+  }
+
+  backendResultMessage =
+      'Lowest-similarity segment: '
+      '${targetSegments[weakestIndex].toUpperCase()}';
+}
+
+  setState(() {
+    acousticSimilarity =
+        (data['similarity'] as num?)?.toDouble();
+
+    acousticNormalizedDistance =
+        (data['normalized_distance'] as num?)?.toDouble();
+
+    acousticDtwDistance =
+        (data['dtw_distance'] as num?)?.toDouble();
+
+    rawSttResult = backendStt;
+    closestSttCandidate = backendStt;
+    recognizedText = backendStt;
+    lastWords = backendStt;
+
+    segmentScores = acousticSegmentScores;
+    overallResult = backendResultMessage;
+
+    acousticStatus =
+        'Combined speech and acoustic analysis completed.';
+  });
+}
+else {
+  setState(() {
+    acousticStatus =
+        'Combined analysis failed: ${response.statusCode} ${response.body}';
+  });
+}
+} catch (e) {
+  setState(() {
+    acousticStatus = 'Combined analysis error: $e';
+  });
+}
+}
+  List<double> calculateSegmentScores(
+  List<String> segments,
+  String detected,
+) {
+  final target = segments.join().toLowerCase();
+  final spoken = detected
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z]'), '');
+
+  if (target.isEmpty || spoken.isEmpty) {
+    return List<double>.filled(segments.length, 0.0);
+  }
+
+  final rows = target.length + 1;
+  final cols = spoken.length + 1;
+
+  final dp = List.generate(
+    rows,
+    (_) => List<int>.filled(cols, 0),
+  );
+
+  for (int i = 0; i < rows; i++) {
+    dp[i][0] = i;
+  }
+
+  for (int j = 0; j < cols; j++) {
+    dp[0][j] = j;
+  }
+
+  for (int i = 1; i < rows; i++) {
+    for (int j = 1; j < cols; j++) {
+      final cost =
+          target[i - 1] == spoken[j - 1] ? 0 : 1;
+
+      dp[i][j] = min(
+        min(
+          dp[i - 1][j] + 1,
+          dp[i][j - 1] + 1,
+        ),
+        dp[i - 1][j - 1] + cost,
+      );
+    }
+  }
+
+  final matchedCharacters =
+      List<bool>.filled(target.length, false);
+
+  int i = target.length;
+  int j = spoken.length;
+
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0) {
+      final cost =
+          target[i - 1] == spoken[j - 1] ? 0 : 1;
+
+      if (dp[i][j] ==
+          dp[i - 1][j - 1] + cost) {
+        if (cost == 0) {
+          matchedCharacters[i - 1] = true;
+        }
+
+        i--;
+        j--;
+        continue;
+      }
+    }
+
+    if (i > 0 &&
+        dp[i][j] == dp[i - 1][j] + 1) {
+      i--;
+      continue;
+    }
+
+    if (j > 0) {
+      j--;
+    }
+  }
+
+  final scores = <double>[];
+
+  int startIndex = 0;
+
+  for (final segment in segments) {
+    int matches = 0;
+
+    for (int k = 0; k < segment.length; k++) {
+      if (matchedCharacters[startIndex + k]) {
+        matches++;
+      }
+    }
+
+    final score =
+        segment.isEmpty ? 0.0 : matches / segment.length;
+
+    scores.add(score);
+
+    startIndex += segment.length;
+  }
+
+  return scores;
+}
+String findClosestSttCandidate(
+  SpeechRecognitionResult result,
+  String target,
+) {
+  if (result.alternates.isEmpty) {
+    return result.recognizedWords.trim();
+  }
+
+  final cleanTarget =
+      target.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+
+  String bestCandidate =
+      result.alternates.first.recognizedWords.trim();
+
+  double bestScore = double.infinity;
+
+  for (final alternative in result.alternates) {
+    final candidate = alternative.recognizedWords.trim();
+
+    if (candidate.isEmpty) {
+      continue;
+    }
+
+    final cleanCandidate =
+        candidate.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+
+    final distance = levenshteinDistance(
+      cleanTarget,
+      cleanCandidate,
+    );
+
+    final longestLength = max(
+      cleanTarget.length,
+      cleanCandidate.length,
+    );
+
+    final normalizedDistance =
+        longestLength == 0 ? 1.0 : distance / longestLength;
+
+    if (normalizedDistance < bestScore) {
+      bestScore = normalizedDistance;
+      bestCandidate = candidate;
+    }
+  }
+
+  return bestCandidate;
+}
+
+  
   /// This callback is invoked each time new recognition results are
   /// available after `listen` is called.
-  void resultListener(SpeechRecognitionResult result) {
-    _logEvent(
-      'Result listener final: ${result.finalResult}, words: ${result.recognizedWords}',
-    );
-    setState(() {
-      lastWords = '${result.recognizedWords} - ${result.finalResult}';
-    });
+void resultListener(SpeechRecognitionResult result) {
+  _logEvent(
+    'Result listener final: ${result.finalResult}, '
+    'words: ${result.recognizedWords}',
+  );
+  
+
+  if (!result.finalResult) {
+    return;
   }
 
-  void soundLevelListener(double level) {
-    minSoundLevel = min(minSoundLevel, level);
-    maxSoundLevel = max(maxSoundLevel, level);
-    // _logEvent('sound level $level: $minSoundLevel - $maxSoundLevel ');
-    setState(() {
-      this.level = level;
-    });
+  debugPrint('--- FINAL STT ALTERNATIVES ---');
+
+  for (int i = 0; i < result.alternates.length; i++) {
+    final alternative = result.alternates[i];
+
+    debugPrint(
+    '${i + 1}. ${alternative.recognizedWords} '
+    '| confidence: ${alternative.confidence}',
+    );
+ }
+
+
+  final rawDetected = result.recognizedWords.trim();
+
+  final bestCandidate =
+      findClosestSttCandidate(result, targetWord);
+
+  final scores = calculateSegmentScores(
+    targetSegments,
+    bestCandidate,
+  );
+
+  int strongSegments = 0;
+
+  for (final score in scores) {
+    if (score >= 0.75) {
+      strongSegments++;
+    }
   }
 
-  void errorListener(SpeechRecognitionError error) {
-    _logEvent(
-      'Received error status: $error, listening: ${speech.isListening}',
-    );
-    setState(() {
-      lastError = '${error.errorMsg} - ${error.permanent}';
-    });
+  String resultMessage;
+
+  if (strongSegments == targetSegments.length) {
+    resultMessage =
+        'All target segments were captured by speech recognition.';
+  } else if (strongSegments > 0) {
+    resultMessage =
+        'Speech recognition captured some parts of the target.';
+  } else {
+    resultMessage =
+        'Speech recognition did not capture the target well.';
   }
 
-  void statusListener(String status) {
-    _logEvent(
-      'Received listener status: $status, listening: ${speech.isListening}',
-    );
-    setState(() {
-      lastStatus = status;
-    });
-  }
+  setState(() {
+  recognizedText = bestCandidate;
+  rawSttResult = rawDetected;
+  closestSttCandidate = bestCandidate;
+  lastWords = bestCandidate;
+  segmentScores = scores;
+  overallResult = resultMessage;
+});
+}
+void soundLevelListener(double level) {
+  minSoundLevel = min(minSoundLevel, level);
+  maxSoundLevel = max(maxSoundLevel, level);
+
+  setState(() {
+    this.level = level;
+  });
+}
+
+void errorListener(SpeechRecognitionError error) {
+  _logEvent(
+    'Received error status: $error, listening: ${speech.isListening}',
+  );
+
+  setState(() {
+    lastError = '${error.errorMsg} - ${error.permanent}';
+  });
+}
+
+void statusListener(String status) {
+  _logEvent(
+    'Received listener status: $status, listening: ${speech.isListening}',
+  );
+
+  setState(() {
+    lastStatus = status;
+  });
+}
 
   void _logEvent(String eventDescription) {
     if (currentOptions.logEvents) {
@@ -233,13 +773,25 @@ class _SpeechSampleAppState extends State<SpeechSampleApp> {
 /// Displays the most recently recognized words and the sound level.
 class RecognitionResultsWidget extends StatelessWidget {
   const RecognitionResultsWidget({
-    Key? key,
+    super.key,
     required this.lastWords,
     required this.level,
-  }) : super(key: key);
+    required this.targetWord,
+    required this.targetSegments,
+    required this.segmentScores,
+    required this.overallResult,
+    required this.rawSttResult,
+    required this.closestSttCandidate,
+  });
 
   final String lastWords;
   final double level;
+  final String targetWord;
+  final List<String> targetSegments;
+  final List<double> segmentScores;
+  final String overallResult;
+  final String rawSttResult;
+  final String closestSttCandidate;
 
   @override
   Widget build(BuildContext context) {
@@ -247,19 +799,149 @@ class RecognitionResultsWidget extends StatelessWidget {
       children: <Widget>[
         Center(
           child: Text(
-            'Recognized Words',
+            'Segment-Level Pronunciation Analysis',
             style: Theme.of(context).textTheme.titleMedium,
           ),
         ),
+
         Stack(
           children: <Widget>[
             Container(
-              constraints: const BoxConstraints(minHeight: 200),
+              constraints: const BoxConstraints(minHeight: 320),
               color: Theme.of(context).secondaryHeaderColor,
-              child: Center(
-                child: Text(lastWords, textAlign: TextAlign.center),
+              width: double.infinity,
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Text(
+                      'TARGET WORD',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+
+                    const SizedBox(height: 6),
+
+                    Text(
+                      targetWord,
+                      style: const TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+
+                    const Text(
+                      'ACOUSTIC SEGMENT FEEDBACK',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+
+                    const SizedBox(height: 12),
+
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: List.generate(
+                        targetSegments.length,
+                        (index) {
+                          final score = index < segmentScores.length
+                              ? segmentScores[index]
+                              : 0.0;
+
+                          final percentage = (score * 100).round();
+
+                          String status;
+
+                          if (score >= 0.75) {
+                            status = 'Matched';
+                          } else if (score > 0.0) {
+                            status = 'Partial';
+                          } else {
+                            status = 'Missing';
+                          }
+
+                          return Expanded(
+                            child: Column(
+                              children: [
+                                Text(
+                                  targetSegments[index].toUpperCase(),
+                                  style: const TextStyle(
+                                    fontSize: 22,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+
+                                const SizedBox(height: 6),
+
+                                Text(
+                                  '$percentage%',
+                                  style: const TextStyle(
+                                    fontSize: 18,
+                                  ),
+                                ),
+
+                                const SizedBox(height: 4),
+
+                                Text(
+                                  status,
+                                  style: const TextStyle(
+                                    fontSize: 14,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+
+                    const SizedBox(height: 24),
+
+                    const Divider(),
+
+                    const SizedBox(height: 12),
+
+                    const Text(
+  'SPEECH-TO-TEXT TRANSCRIPTION',
+  style: TextStyle(
+    fontSize: 14,
+    fontWeight: FontWeight.bold,
+  ),
+),
+
+const SizedBox(height: 6),
+
+Text(
+  rawSttResult.isEmpty ? '-' : rawSttResult,
+  style: const TextStyle(
+    fontSize: 22,
+  ),
+),
+
+const SizedBox(height: 20),
+
+if (overallResult.isNotEmpty)
+  Text(
+    overallResult,
+    textAlign: TextAlign.center,
+    style: const TextStyle(
+      fontSize: 16,
+      fontWeight: FontWeight.bold,
+    ),
+  ),
+
+                    const SizedBox(height: 40),
+                  ],
+                ),
               ),
             ),
+
             Positioned.fill(
               bottom: 10,
               child: Align(
@@ -273,11 +955,10 @@ class RecognitionResultsWidget extends StatelessWidget {
     );
   }
 }
-
 /// Display the current error status from the speech
 /// recognizer
 class ErrorWidget extends StatelessWidget {
-  const ErrorWidget({Key? key, required this.lastError}) : super(key: key);
+  const ErrorWidget({super.key, required this.lastError});
 
   final String lastError;
 
@@ -309,8 +990,8 @@ class SpeechControlWidget extends StatelessWidget {
     this.startListening,
     this.stopListening,
     this.cancelListening, {
-    Key? key,
-  }) : super(key: key);
+    super.key,
+  });
 
   final bool hasSpeech;
   final bool isListening;
@@ -344,11 +1025,11 @@ class SessionOptionsWidget extends StatelessWidget {
   const SessionOptionsWidget({
     required this.options,
     required this.localeNames,
-    Key? key,
+    super.key,
     required this.onChange,
     required this.listenForController,
     required this.pauseForController,
-  }) : super(key: key);
+  });
 
   final SpeechExampleConfig options;
   final List<LocaleName> localeNames;
@@ -505,8 +1186,7 @@ class SessionOptionsWidget extends StatelessWidget {
 }
 
 class InitSpeechWidget extends StatelessWidget {
-  const InitSpeechWidget(this.hasSpeech, this.initSpeechState, {Key? key})
-    : super(key: key);
+  const InitSpeechWidget(this.hasSpeech, this.initSpeechState, {super.key});
 
   final bool hasSpeech;
   final Future<void> Function() initSpeechState;
@@ -527,8 +1207,7 @@ class InitSpeechWidget extends StatelessWidget {
 
 /// Display the current status of the listener
 class SpeechStatusWidget extends StatelessWidget {
-  const SpeechStatusWidget({Key? key, required this.lastStatus})
-    : super(key: key);
+  const SpeechStatusWidget({super.key, required this.lastStatus});
 
   final String lastStatus;
 
@@ -674,7 +1353,7 @@ Future<SpeechExampleConfig> showSetUp(
 }
 
 class HelpWidget extends StatelessWidget {
-  const HelpWidget({Key? key}) : super(key: key);
+  const HelpWidget({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -769,7 +1448,7 @@ class HelpWidget extends StatelessWidget {
 /// A simple widget that displays a microphone icon
 /// and a circle that changes size based on the sound level.
 class MicrophoneWidget extends StatelessWidget {
-  const MicrophoneWidget({Key? key, required this.level}) : super(key: key);
+  const MicrophoneWidget({super.key, required this.level});
 
   final double level;
 
@@ -784,7 +1463,7 @@ class MicrophoneWidget extends StatelessWidget {
           BoxShadow(
             blurRadius: .26,
             spreadRadius: level * 1.5,
-            color: Colors.black.withOpacity(.05),
+            color: Colors.black.withValues(alpha: .05),
           ),
         ],
         color: Colors.white,

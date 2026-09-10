@@ -26,6 +26,12 @@ class _SpeechSampleAppState extends State<SpeechSampleApp> {
   String lastWords = '';
   String lastError = '';
   String lastStatus = '';
+
+  String targetWord = 'ngiyala';
+  String recognizedText = '';
+double characterSimilarity = 0.0;
+String matchResult = ''; 
+  
   List<LocaleName> _localeNames = [];
   final SpeechToText speech = SpeechToText();
 
@@ -137,7 +143,7 @@ class _SpeechSampleAppState extends State<SpeechSampleApp> {
       listenOptions: currentOptions.options.copyWith(
         listenFor: Duration(seconds: currentOptions.listenFor),
         pauseFor: Duration(seconds: currentOptions.pauseFor),
-        localeId: currentOptions.localeId,
+        localeId: 'currentOptions.localeId',
       ),
       onSoundLevelChange: soundLevelListener,
     );
@@ -715,7 +721,7 @@ class MicrophoneWidget extends StatelessWidget {
           BoxShadow(
               blurRadius: .26,
               spreadRadius: level * 1.5,
-              color: Colors.black.withOpacity(.05))
+              color: Colors.black.withValues(alpha: .05))
         ],
         color: Colors.white,
         borderRadius: const BorderRadius.all(Radius.circular(50)),
