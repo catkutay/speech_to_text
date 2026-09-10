@@ -7,6 +7,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'package:record/record.dart';
+import 'package:audioplayers/audioplayers.dart';
 
 //Speech Recognition packages
 import 'package:speech_to_text/speech_recognition_error.dart';
@@ -57,6 +58,16 @@ String acousticStatus = '';
 double? acousticSimilarity;
 double? acousticNormalizedDistance;
 double? acousticDtwDistance;
+
+String teacherSttResult = '';
+String learnerSttResult = '';
+double? sttSimilarity;
+
+final AudioPlayer teacherAudioPlayer = AudioPlayer();
+final AudioPlayer learnerAudioPlayer = AudioPlayer();
+
+String selectedTeacherUrl =
+    'https://prt820-language-app1.s3.ap-southeast-2.amazonaws.com/words/Common/ngiyala.wav';
 
 final AudioRecorder learnerRecorder = AudioRecorder();
 
@@ -224,6 +235,31 @@ if (!isLearnerRecording && learnerRecordingPath != null)
     'Learner recording ready ✓',
     style: TextStyle(fontWeight: FontWeight.bold),
   ),
+  const SizedBox(height: 10),
+
+Wrap(
+  alignment: WrapAlignment.center,
+  spacing: 12,
+  runSpacing: 8,
+  children: [
+    ElevatedButton.icon(
+      onPressed: playTeacherAudio,
+      icon: const Icon(Icons.volume_up),
+      label: const Text('Listen to Teacher'),
+    ),
+
+    ElevatedButton.icon(
+      onPressed:
+          learnerRecordingPath == null
+              ? null
+              : playLearnerAudio,
+      icon: const Icon(Icons.play_arrow),
+      label: const Text('Listen to My Recording'),
+    ),
+  ],
+),
+
+const SizedBox(height: 10),
 
 ElevatedButton.icon(
   onPressed: runAcousticCheck,
@@ -238,6 +274,50 @@ if (acousticStatus.isNotEmpty)
     acousticStatus,
     textAlign: TextAlign.center,
   ),
+// =====================================================
+// TEACHER VS LEARNER STT
+// =====================================================
+
+if (teacherSttResult.isNotEmpty ||
+    learnerSttResult.isNotEmpty) ...[
+
+  const SizedBox(height: 16),
+
+  const Text(
+    'SPEECH RECOGNITION COMPARISON',
+    style: TextStyle(
+      fontSize: 16,
+      fontWeight: FontWeight.bold,
+    ),
+  ),
+
+  const SizedBox(height: 8),
+
+  Text(
+    'Teacher STT: '
+    '${teacherSttResult.isEmpty ? "-" : teacherSttResult}',
+  ),
+
+  const SizedBox(height: 4),
+
+  Text(
+    'Learner STT: '
+    '${learnerSttResult.isEmpty ? "-" : learnerSttResult}',
+  ),
+
+  const SizedBox(height: 4),
+
+  if (sttSimilarity != null)
+    Text(
+      'STT similarity: '
+      '${(sttSimilarity! * 100).toStringAsFixed(1)}%',
+      style: const TextStyle(
+        fontWeight: FontWeight.bold,
+      ),
+    ),
+],
+
+const SizedBox(height: 10),
 
 if (acousticSimilarity != null)
   Text(
@@ -380,9 +460,42 @@ Future<void> stopLearnerAttempt() async {
     level = 0.0;
   });
 }
+Future<void> playTeacherAudio() async {
+  try {
+    await teacherAudioPlayer.stop();
+
+    await teacherAudioPlayer.play(
+      UrlSource(selectedTeacherUrl),
+    );
+  } catch (e) {
+    setState(() {
+      acousticStatus = 'Could not play teacher audio: $e';
+    });
+  }
+}
+
+Future<void> playLearnerAudio() async {
+  if (learnerRecordingPath == null) {
+    setState(() {
+      acousticStatus = 'Record your pronunciation first.';
+    });
+    return;
+  }
+
+  try {
+    await learnerAudioPlayer.stop();
+
+    await learnerAudioPlayer.play(
+      UrlSource(learnerRecordingPath!),
+    );
+  } catch (e) {
+    setState(() {
+      acousticStatus = 'Could not play learner audio: $e';
+    });
+  }
+}
   Future<void> runAcousticCheck() async {
-  const teacherUrl =
-      'https://prt820-language-app1.s3.ap-southeast-2.amazonaws.com/words/Common/ngiyala.wav';
+  final teacherUrl = selectedTeacherUrl;
 
   if (learnerRecordingPath == null) {
     setState(() {
@@ -431,9 +544,22 @@ Future<void> stopLearnerAttempt() async {
 
     if (response.statusCode == 200) {
   final data = jsonDecode(response.body);
+  final backendTeacherStt =
+    (data['teacher_stt'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
 
-  final backendStt =
-      (data['stt_text'] ?? '').toString().trim().toLowerCase();
+final backendLearnerStt =
+    (data['learner_stt'] ?? data['stt_text'] ?? '')
+        .toString()
+        .trim()
+        .toLowerCase();
+
+final backendSttSimilarity =
+    (data['stt_similarity'] as num?)?.toDouble();
+
+  final backendStt = backendLearnerStt;
 
 final acousticSegmentsRaw =
     (data['acoustic_segments'] as List<dynamic>?) ?? [];
@@ -484,27 +610,35 @@ if (acousticSegmentScores.isNotEmpty) {
       '${targetSegments[weakestIndex].toUpperCase()}';
 }
 
-  setState(() {
-    acousticSimilarity =
-        (data['similarity'] as num?)?.toDouble();
+setState(() {
+  // NEW: save teacher + learner STT results
+  teacherSttResult = backendTeacherStt;
+  learnerSttResult = backendLearnerStt;
+  sttSimilarity = backendSttSimilarity;
 
-    acousticNormalizedDistance =
-        (data['normalized_distance'] as num?)?.toDouble();
+  // Existing acoustic results
+  acousticSimilarity =
+      (data['similarity'] as num?)?.toDouble();
 
-    acousticDtwDistance =
-        (data['dtw_distance'] as num?)?.toDouble();
+  acousticNormalizedDistance =
+      (data['normalized_distance'] as num?)?.toDouble();
 
-    rawSttResult = backendStt;
-    closestSttCandidate = backendStt;
-    recognizedText = backendStt;
-    lastWords = backendStt;
+  acousticDtwDistance =
+      (data['dtw_distance'] as num?)?.toDouble();
 
-    segmentScores = acousticSegmentScores;
-    overallResult = backendResultMessage;
+  // Keep existing learner STT behaviour
+  rawSttResult = backendStt;
+  closestSttCandidate = backendStt;
+  recognizedText = backendStt;
+  lastWords = backendStt;
 
-    acousticStatus =
-        'Combined speech and acoustic analysis completed.';
-  });
+  // Keep DTW segment results
+  segmentScores = acousticSegmentScores;
+  overallResult = backendResultMessage;
+
+  acousticStatus =
+      'Combined speech and acoustic analysis completed.';
+});
 }
 else {
   setState(() {
